@@ -80,6 +80,7 @@ Useful local checks:
 | `discord_post_message` | Posts a message to a text channel or existing thread, with opt-in `@everyone`/`@here` parsing. |
 | `discord_publish_message` | Publishes/crossposts an announcement-channel message, safely succeeding when it was already published. |
 | `discord_edit_message` | Replaces an existing message and optionally its single image, temporarily unarchiving and restoring its thread when necessary. |
+| `discord_delete_messages` | Dry-runs or permanently deletes an exact guarded batch of messages from one channel. |
 | `discord_create_forum_post` | Creates a forum post with its starter message and an optional local image. |
 
 Posting, publishing, and editing tools require `confirmed: true` in the call.
@@ -91,6 +92,13 @@ For a `mod-updates` entry, use `discord_edit_message` to maintain its starter
 message; reserve `discord_post_message` comments for actual new-release notes.
 In announcement channels, call `discord_publish_message` after the post is
 created so following channels receive it.
+
+`discord_delete_messages` uses `confirmed: false` for its non-mutating dry run,
+which fetches and returns every exact target. Permanent deletion requires
+`confirmed: true` plus an `expected_message_count` equal to the number of unique
+supplied IDs. The tool rejects duplicate IDs and preflights the complete batch
+before deleting its first message. Its receipt lists every deletion and any
+per-message failure so a partial result is never hidden.
 
 `discord_create_forum_post` and `discord_edit_message` accept an optional
 `image_path` pointing to a local PNG, JPEG, GIF, or WebP file. `~` is expanded.

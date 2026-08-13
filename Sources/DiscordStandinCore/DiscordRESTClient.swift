@@ -224,6 +224,15 @@ public struct DiscordRESTClient: Sendable {
     )
   }
 
+  public func deleteMessage(
+    channelID: String,
+    messageID: String
+  ) async throws {
+    try await deleteWithoutBody(
+      path: "channels/\(channelID)/messages/\(messageID)"
+    )
+  }
+
   public func setThreadArchived(
     channelID: String,
     archived: Bool
@@ -306,6 +315,10 @@ public struct DiscordRESTClient: Sendable {
       path: path
     )
     return try decode(data)
+  }
+
+  private func deleteWithoutBody(path: String) async throws {
+    _ = try await requestData(method: "DELETE", path: path)
   }
 
   private func patch<Response: Decodable & Sendable, Body: Encodable & Sendable>(

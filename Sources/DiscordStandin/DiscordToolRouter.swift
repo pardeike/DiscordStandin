@@ -215,6 +215,34 @@ struct DiscordToolRouter: Sendable {
         )
       ),
       Tool(
+        name: "discord_delete_messages",
+        description:
+          "Dry-run or permanently delete an exact batch of messages from one channel. With confirmed=false, fetches and returns every target without deleting. With confirmed=true, expected_message_count must match the supplied unique IDs; every message is preflighted before the first deletion, and per-message results report any partial failure.",
+        inputSchema: schema(
+          properties: [
+            "channel_id": stringProperty("Channel or thread snowflake containing every message."),
+            "message_ids": arrayProperty(
+              "Exact message snowflakes to inspect or delete, in deletion order; 1 through 100 unique IDs.",
+              itemType: "string"
+            ),
+            "expected_message_count": integerProperty(
+              "Required when confirmed=true and must equal the number of supplied message IDs."
+            ),
+            "confirmed": booleanProperty(
+              "False performs a dry run. True permanently deletes after count validation and full preflight."
+            ),
+          ],
+          required: ["channel_id", "message_ids", "confirmed"]
+        ),
+        annotations: .init(
+          title: "Delete Discord Messages",
+          readOnlyHint: false,
+          destructiveHint: true,
+          idempotentHint: false,
+          openWorldHint: true
+        )
+      ),
+      Tool(
         name: "discord_create_forum_post",
         description:
           "Create a Discord forum post and starter message as the authenticated user, optionally uploading one local image. Requires confirmed=true.",
@@ -341,6 +369,28 @@ struct DiscordToolRouter: Sendable {
             messageID: requiredString("message_id", in: arguments),
             content: requiredString("content", in: arguments),
             imagePath: arguments["image_path"]?.stringValue
+          )
+        )
+
+      case "discord_delete_messages":
+        let channelID = try requiredString("channel_id", in: arguments)
+        let messageIDs = try stringArray("message_ids", in: arguments)
+        if arguments["confirmed"]?.boolValue == true {
+          guard let expectedMessageCount = arguments["expected_message_count"]?.intValue else {
+            throw ToolArgumentError.missing("expected_message_count")
+          }
+          return try result(
+            await operations.deleteMessages(
+              channelID: channelID,
+              messageIDs: messageIDs,
+              expectedMessageCount: expectedMessageCount
+            )
+          )
+        }
+        return try result(
+          await operations.planMessageDeletion(
+            channelID: channelID,
+            messageIDs: messageIDs
           )
         )
 

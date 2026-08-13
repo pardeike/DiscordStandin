@@ -276,6 +276,28 @@ struct DiscordRESTClientTests {
     #expect(attachments.first?["filename"] as? String == "Preview.png")
   }
 
+  @Test("Deletes one exact message with no request body")
+  func deleteMessage() async throws {
+    let transport = StubTransport(routes: [
+      "/api/v9/channels/100/messages/200": [
+        .json("", status: 204)
+      ]
+    ])
+    let client = DiscordRESTClient(
+      token: "secret-user-token",
+      baseURL: baseURL,
+      transport: transport,
+      profile: profile,
+      rateLimiter: DiscordRateLimiter()
+    )
+
+    try await client.deleteMessage(channelID: "100", messageID: "200")
+
+    let request = try #require(await transport.recordedRequests().first)
+    #expect(request.httpMethod == "DELETE")
+    #expect(request.httpBody == nil)
+  }
+
   @Test("Creates a forum thread with a multipart starter image")
   func createForumPostImage() async throws {
     let image = Data([0x89, 0x50, 0x4E, 0x47, 0x04, 0x05, 0x06])
@@ -533,6 +555,146 @@ struct DiscordOperationsTests {
     #expect(await transport.recordedRequests().count == 1)
   }
 
+  @Test("Dry-runs an exact deletion batch without mutating Discord")
+  func planMessageDeletion() async throws {
+    let transport = StubTransport(routes: [
+      "/api/v9/channels/100/messages": [
+        .json(messageListJSON(id: "200", content: "First")),
+        .json(messageListJSON(id: "201", content: "Second")),
+      ]
+    ])
+    let operations = DiscordOperations(
+      credentials: MemoryCredentialStore(token: "token"),
+      baseURL: baseURL,
+      transport: transport,
+      profile: profile
+    )
+
+    let plan = try await operations.planMessageDeletion(
+      channelID: "100",
+      messageIDs: ["200", "201"]
+    )
+
+    #expect(plan.channelID == "100")
+    #expect(plan.messageCount == 2)
+    #expect(plan.messages.map(\.id) == ["200", "201"])
+    let requests = await transport.recordedRequests()
+    #expect(requests.map(\.httpMethod) == ["GET", "GET"])
+  }
+
+  @Test("Preflights the complete deletion batch before deleting")
+  func deleteMessages() async throws {
+    let transport = StubTransport(routes: [
+      "/api/v9/channels/100/messages": [
+        .json(messageListJSON(id: "200", content: "First")),
+        .json(messageListJSON(id: "201", content: "Second")),
+      ],
+      "/api/v9/channels/100/messages/200": [.json("", status: 204)],
+      "/api/v9/channels/100/messages/201": [.json("", status: 204)],
+    ])
+    let operations = DiscordOperations(
+      credentials: MemoryCredentialStore(token: "token"),
+      baseURL: baseURL,
+      transport: transport,
+      profile: profile
+    )
+
+    let receipt = try await operations.deleteMessages(
+      channelID: "100",
+      messageIDs: ["200", "201"],
+      expectedMessageCount: 2
+    )
+
+    #expect(receipt.success)
+    #expect(receipt.deletedMessageIDs == ["200", "201"])
+    #expect(receipt.failures.isEmpty)
+    let requests = await transport.recordedRequests()
+    #expect(requests.map(\.httpMethod) == ["GET", "GET", "DELETE", "DELETE"])
+    #expect(
+      requests.map(\.url?.path) == [
+        "/api/v9/channels/100/messages",
+        "/api/v9/channels/100/messages",
+        "/api/v9/channels/100/messages/200",
+        "/api/v9/channels/100/messages/201",
+      ])
+  }
+
+  @Test("Does not delete when any preflight target is missing")
+  func deletionPreflightFailure() async throws {
+    let transport = StubTransport(routes: [
+      "/api/v9/channels/100/messages": [
+        .json(messageListJSON(id: "200", content: "First")),
+        .json("[]"),
+      ]
+    ])
+    let operations = DiscordOperations(
+      credentials: MemoryCredentialStore(token: "token"),
+      baseURL: baseURL,
+      transport: transport,
+      profile: profile
+    )
+
+    do {
+      _ = try await operations.deleteMessages(
+        channelID: "100",
+        messageIDs: ["200", "201"],
+        expectedMessageCount: 2
+      )
+      Issue.record("Expected the missing message to fail the preflight")
+    } catch let error as DiscordStandinError {
+      guard case .invalidDeletion(let message) = error else {
+        Issue.record("Expected invalidDeletion, got \(error)")
+        return
+      }
+      #expect(message.contains("201"))
+    }
+
+    let requests = await transport.recordedRequests()
+    #expect(requests.map(\.httpMethod) == ["GET", "GET"])
+  }
+
+  @Test("Rejects duplicate IDs and an incorrect expected count before requests")
+  func deletionInputGuards() async throws {
+    let transport = StubTransport(routes: [:])
+    let operations = DiscordOperations(
+      credentials: MemoryCredentialStore(token: "token"),
+      baseURL: baseURL,
+      transport: transport,
+      profile: profile
+    )
+
+    do {
+      _ = try await operations.planMessageDeletion(
+        channelID: "100",
+        messageIDs: ["200", "200"]
+      )
+      Issue.record("Expected duplicate IDs to be rejected")
+    } catch let error as DiscordStandinError {
+      guard case .invalidDeletion(let message) = error else {
+        Issue.record("Expected invalidDeletion, got \(error)")
+        return
+      }
+      #expect(message.contains("duplicates"))
+    }
+
+    do {
+      _ = try await operations.deleteMessages(
+        channelID: "100",
+        messageIDs: ["200"],
+        expectedMessageCount: 2
+      )
+      Issue.record("Expected the count mismatch to be rejected")
+    } catch let error as DiscordStandinError {
+      guard case .invalidDeletion(let message) = error else {
+        Issue.record("Expected invalidDeletion, got \(error)")
+        return
+      }
+      #expect(message.contains("does not match"))
+    }
+
+    #expect(await transport.recordedRequests().isEmpty)
+  }
+
   @Test("Filters active threads to the requested forum")
   func forumPosts() async throws {
     let archivedJSON = """
@@ -649,6 +811,20 @@ private func temporaryImage(data: Data) throws -> URL {
   let imageURL = directory.appendingPathComponent("Preview.png")
   try data.write(to: imageURL)
   return imageURL
+}
+
+private func messageListJSON(id: String, content: String) -> String {
+  """
+  [{
+    "id":"\(id)",
+    "channel_id":"100",
+    "guild_id":"300",
+    "content":"\(content)",
+    "timestamp":"2026-07-26T00:00:00.000000+00:00",
+    "author":null,
+    "flags":0
+  }]
+  """
 }
 
 private func multipartPayload(from request: URLRequest) throws -> [String: Any] {

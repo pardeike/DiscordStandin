@@ -9,6 +9,7 @@ public enum DiscordStandinError: LocalizedError, Sendable {
   case invalidURL
   case sessionRejected
   case invalidSearch(String)
+  case invalidDeletion(String)
   case messageNotFound
   case threadArchiveRestoreFailed(String)
   case searchIndexing(retryAfter: Double)
@@ -33,6 +34,8 @@ public enum DiscordStandinError: LocalizedError, Sendable {
       "Discord rejected the stored session. Run the login flow again."
     case .invalidSearch(let message):
       "Invalid Discord message search: \(message)"
+    case .invalidDeletion(let message):
+      "Invalid Discord message deletion: \(message)"
     case .messageNotFound:
       "Discord did not return the requested message."
     case .threadArchiveRestoreFailed(let message):

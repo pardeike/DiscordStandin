@@ -292,6 +292,66 @@ public struct DiscordOperations: Sendable {
     return DiscordMessageResult(message: message, url: url)
   }
 
+  public func planMessageDeletion(
+    channelID: String,
+    messageIDs: [String]
+  ) async throws -> DiscordMessageDeletionPlan {
+    let messages = try await preflightMessageDeletion(
+      channelID: channelID,
+      messageIDs: messageIDs
+    )
+    return DiscordMessageDeletionPlan(
+      channelID: channelID,
+      messageCount: messages.count,
+      messages: messages
+    )
+  }
+
+  public func deleteMessages(
+    channelID: String,
+    messageIDs: [String],
+    expectedMessageCount: Int
+  ) async throws -> DiscordMessageDeletionReceipt {
+    guard expectedMessageCount == messageIDs.count else {
+      throw DiscordStandinError.invalidDeletion(
+        "expected_message_count \(expectedMessageCount) does not match the \(messageIDs.count) supplied message IDs"
+      )
+    }
+
+    _ = try await preflightMessageDeletion(
+      channelID: channelID,
+      messageIDs: messageIDs
+    )
+
+    let client = try authenticatedClient()
+    var deletedMessageIDs: [String] = []
+    var failures: [DiscordMessageDeletionFailure] = []
+    for messageID in messageIDs {
+      do {
+        try await client.deleteMessage(
+          channelID: channelID,
+          messageID: messageID
+        )
+        deletedMessageIDs.append(messageID)
+      } catch {
+        failures.append(
+          DiscordMessageDeletionFailure(
+            messageID: messageID,
+            error: error.localizedDescription
+          )
+        )
+      }
+    }
+
+    return DiscordMessageDeletionReceipt(
+      channelID: channelID,
+      requestedCount: messageIDs.count,
+      deletedMessageIDs: deletedMessageIDs,
+      failures: failures,
+      success: failures.isEmpty
+    )
+  }
+
   public func createForumPost(
     serverID: String,
     forumChannelID: String,
@@ -317,6 +377,50 @@ public struct DiscordOperations: Sendable {
 
   private func authenticatedClient() throws -> DiscordRESTClient {
     try client(token: authenticatedToken())
+  }
+
+  private func preflightMessageDeletion(
+    channelID: String,
+    messageIDs: [String]
+  ) async throws -> [DiscordMessage] {
+    guard channelID.allSatisfy(\.isNumber), !channelID.isEmpty else {
+      throw DiscordStandinError.invalidDeletion("channel_id must be a Discord snowflake")
+    }
+    guard (1...100).contains(messageIDs.count) else {
+      throw DiscordStandinError.invalidDeletion(
+        "message_ids must contain between 1 and 100 snowflakes"
+      )
+    }
+    guard Set(messageIDs).count == messageIDs.count else {
+      throw DiscordStandinError.invalidDeletion("message_ids must not contain duplicates")
+    }
+    guard messageIDs.allSatisfy({ !$0.isEmpty && $0.allSatisfy(\.isNumber) }) else {
+      throw DiscordStandinError.invalidDeletion(
+        "every message_id must be a Discord snowflake"
+      )
+    }
+
+    let client = try authenticatedClient()
+    var messages: [DiscordMessage] = []
+    for messageID in messageIDs {
+      do {
+        let message = try await client.message(
+          channelID: channelID,
+          messageID: messageID
+        )
+        guard message.channelID == channelID else {
+          throw DiscordStandinError.invalidDeletion(
+            "message \(messageID) resolved outside channel \(channelID)"
+          )
+        }
+        messages.append(message)
+      } catch {
+        throw DiscordStandinError.invalidDeletion(
+          "could not preflight message \(messageID): \(error.localizedDescription)"
+        )
+      }
+    }
+    return messages
   }
 
   private func authenticatedToken() throws -> String {

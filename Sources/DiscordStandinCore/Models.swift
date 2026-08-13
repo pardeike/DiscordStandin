@@ -244,6 +244,25 @@ public struct DiscordMessageResult: Codable, Sendable, Equatable {
   public let url: String?
 }
 
+public struct DiscordMessageDeletionPlan: Codable, Sendable, Equatable {
+  public let channelID: String
+  public let messageCount: Int
+  public let messages: [DiscordMessage]
+}
+
+public struct DiscordMessageDeletionFailure: Codable, Sendable, Equatable {
+  public let messageID: String
+  public let error: String
+}
+
+public struct DiscordMessageDeletionReceipt: Codable, Sendable, Equatable {
+  public let channelID: String
+  public let requestedCount: Int
+  public let deletedMessageIDs: [String]
+  public let failures: [DiscordMessageDeletionFailure]
+  public let success: Bool
+}
+
 public struct DiscordPublishReceipt: Codable, Sendable, Equatable {
   public let message: DiscordMessage
   public let url: String?

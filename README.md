@@ -18,9 +18,21 @@ snapshot, then disconnects; it does not observe events or run a daemon.
 
 The script runs the tests, builds a release executable, installs the app bundle,
 signs it with the first persistent `Developer ID Application` identity in the
-login Keychain, verifies the installed signature, and prints only `ok` on
-success. On failure it prints the captured build diagnostics to stderr.
+login Keychain, verifies the installed signature and MCP handshake, and prints
+only `ok` on success. On failure it prints recent diagnostics and the full log
+path to stderr. Logs are retained in `.build/logs/`.
 `CODESIGN_IDENTITY` can select a different persistent identity.
+
+For local verification without installation, run `./scripts/build-quiet.sh --verify`.
+The stdio regression suite checks initialization, all 14 tools, ping, and invalid
+request rejection without accessing Discord or account credentials. Installation
+runs this suite against the signed release executable too.
+
+Swift MCP SDK 0.12.1 incorrectly requires strings for experimental client
+capability values. DiscordStandin ignores these unsupported declarations during
+initialization so clients advertising object-valued extensions can connect.
+Other fields retain the SDK's normal validation. Remove the transport workaround
+when the SDK supports the protocol's object-valued capabilities.
 
 Using a persistent identity is required for stable Keychain authorization
 between builds. Do not replace it with ad-hoc signing (`codesign --sign -`).
@@ -31,7 +43,8 @@ The default installed executable is:
 ~/.codex/mcp-servers/discord-standin/DiscordStandin.app/Contents/MacOS/DiscordStandin
 ```
 
-Add it to `~/.codex/config.toml`:
+The install command registers it in `~/.codex/config.toml` when the shared
+`/Users/ap/Scripts/mcp-local` helper is available:
 
 ```toml
 [mcp_servers.discord-standin]
@@ -39,9 +52,18 @@ command = "/absolute/home/path/.codex/mcp-servers/discord-standin/DiscordStandin
 args = ["server"]
 ```
 
-Replace `/absolute/home/path` with the current user's absolute home directory;
-TOML does not expand `~`. Restart the MCP host after changing its
-configuration.
+Restart the MCP host after a new registration or configuration change. To
+verify the installed server independently of the host's current tool list, run:
+
+```sh
+/Users/ap/Scripts/mcp-local check discord-standin
+```
+
+The shared helper can also list configured local MCP servers:
+
+```sh
+/Users/ap/Scripts/mcp-local list
+```
 
 ## Login
 

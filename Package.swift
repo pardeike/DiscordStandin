@@ -15,6 +15,7 @@ let package = Package(
     .executable(name: "DiscordStandin", targets: ["DiscordStandin"])
   ],
   dependencies: [
+    .package(url: "https://github.com/apple/swift-log.git", from: "1.14.0"),
     .package(
       url: "https://github.com/modelcontextprotocol/swift-sdk.git",
       exact: "0.12.1"
@@ -33,6 +34,7 @@ let package = Package(
       dependencies: [
         "DiscordStandinCore",
         .product(name: "MCP", package: "swift-sdk"),
+        .product(name: "Logging", package: "swift-log"),
       ],
       swiftSettings: strictSwiftSettings,
       linkerSettings: [

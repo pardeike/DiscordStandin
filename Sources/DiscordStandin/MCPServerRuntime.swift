@@ -17,7 +17,7 @@ enum MCPServerRuntime {
       await router.call(name: parameters.name, arguments: parameters.arguments)
     }
 
-    let transport = StdioTransport()
+    let transport = InitializationCompatibleTransport()
     try await server.start(transport: transport)
     await server.waitUntilCompleted()
   }

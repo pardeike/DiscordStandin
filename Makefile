@@ -5,6 +5,7 @@ CODEX_MCP_ROOT ?= $(HOME)/.codex/mcp-servers
 INSTALL_DIR ?= $(CODEX_MCP_ROOT)/discord-standin
 APP_DIR ?= $(INSTALL_DIR)/DiscordStandin.app
 INSTALLED_EXECUTABLE ?= $(APP_DIR)/Contents/MacOS/DiscordStandin
+MCP_REGISTRAR ?= $(HOME)/Scripts/mcp-local
 
 .PHONY: build test install
 
@@ -13,6 +14,8 @@ build:
 
 test:
 	$(SWIFT) test
+	$(SWIFT) build
+	python3 scripts/test-handshake.py .build/debug/DiscordStandin
 
 install: test
 	@test -n "$(CODESIGN_IDENTITY)" || { \
@@ -26,3 +29,5 @@ install: test
 	codesign --force --deep --options runtime --timestamp --sign "$(CODESIGN_IDENTITY)" "$(APP_DIR)"
 	codesign --verify --deep --strict "$(APP_DIR)"
 	"$(INSTALLED_EXECUTABLE)" help >/dev/null
+	python3 scripts/test-handshake.py "$(INSTALLED_EXECUTABLE)"
+	@if [ -x "$(MCP_REGISTRAR)" ]; then "$(MCP_REGISTRAR)" register discord-standin "$(INSTALLED_EXECUTABLE)" server >/dev/null; fi

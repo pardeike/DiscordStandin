@@ -11,4 +11,5 @@
 - Preserve the process-wide adaptive Discord rate limiter and conservative deterministic pacing. Learn bucket/reset headers, honor the full `retry_after` period, and do not add randomized timing intended to mimic a human.
 - Editing a message in an archived thread must temporarily unarchive it and restore the archived state after either success or failure.
 - Build, test, sign, install, and verify with `./scripts/build-quiet.sh`. A successful run must print only `ok`; failures must surface the captured diagnostics.
+- Use `./scripts/build-quiet.sh --verify` for local tests without installation. Both modes exercise real stdio initialization with object-valued experimental capabilities, tool discovery, and malformed-request rejection. Full workflow logs stay in ignored `.build/logs/`.
 - Keep the app signed with a persistent Developer ID identity discovered by `Makefile` or supplied through `CODESIGN_IDENTITY`. Do not use ad-hoc signing because it invalidates the Keychain authorization identity on every build.

@@ -24,7 +24,7 @@ path to stderr. Logs are retained in `.build/logs/`.
 `CODESIGN_IDENTITY` can select a different persistent identity.
 
 For local verification without installation, run `./scripts/build-quiet.sh --verify`.
-The stdio regression suite checks initialization, all 14 tools, ping, and invalid
+The stdio regression suite checks initialization, all registered tools, ping, and invalid
 request rejection without accessing Discord or account credentials. Installation
 runs this suite against the signed release executable too.
 

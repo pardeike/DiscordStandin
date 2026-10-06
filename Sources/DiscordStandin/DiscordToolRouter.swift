@@ -80,6 +80,42 @@ struct DiscordToolRouter: Sendable {
         annotations: readOnlyAnnotations(title: "List Discord Channels")
       ),
       Tool(
+        name: "discord_create_channel",
+        description: "Create a server channel. Requires confirmed=true.",
+        inputSchema: schema(properties: [
+          "server_id": stringProperty("Discord server snowflake."),
+          "name": stringProperty("New channel name."),
+          "type": integerProperty("Channel type: 0 text, 2 voice, 4 category, 5 announcement, 13 stage, 15 forum, or 16 media."),
+          "parent_id": stringProperty("Optional parent category snowflake."),
+          "confirmed": booleanProperty("Must be true after server, name, type, and parent are final."),
+        ], required: ["server_id", "name", "type", "confirmed"]),
+        annotations: mutationAnnotations(title: "Create Discord Channel")
+      ),
+      Tool(
+        name: "discord_rename_channel",
+        description: "Rename an exact server channel after verifying its current name. Requires confirmed=true.",
+        inputSchema: schema(properties: [
+          "server_id": stringProperty("Discord server snowflake."),
+          "channel_id": stringProperty("Channel snowflake."),
+          "expected_name": stringProperty("Current channel name, checked before mutation."),
+          "name": stringProperty("New channel name."),
+          "confirmed": booleanProperty("Must be true after channel and new name are final."),
+        ], required: ["server_id", "channel_id", "expected_name", "name", "confirmed"]),
+        annotations: mutationAnnotations(title: "Rename Discord Channel")
+      ),
+      Tool(
+        name: "discord_delete_channel",
+        description: "Permanently delete an exact server channel after verifying its current name. Requires confirmed=true.",
+        inputSchema: schema(properties: [
+          "server_id": stringProperty("Discord server snowflake."),
+          "channel_id": stringProperty("Channel snowflake."),
+          "expected_name": stringProperty("Current channel name, checked before deletion."),
+          "confirmed": booleanProperty("Must be true after the exact channel is final."),
+        ], required: ["server_id", "channel_id", "expected_name", "confirmed"]),
+        annotations: .init(title: "Delete Discord Channel", readOnlyHint: false,
+          destructiveHint: true, idempotentHint: false, openWorldHint: true)
+      ),
+      Tool(
         name: "discord_list_forum_posts",
         description:
           "List active posts and one page of up to 100 public archived posts for a Discord forum channel. When archivedHasMore is true, pass nextArchivedBefore as archived_before to read the next page; cursor pages omit the unchanged active-post list.",
@@ -127,6 +163,50 @@ struct DiscordToolRouter: Sendable {
         annotations: readOnlyAnnotations(title: "Read Discord Message")
       ),
       Tool(
+        name: "discord_download_attachment",
+        description: "Save one attachment from an exact Discord message to a new local file. The destination must not exist. Requires confirmed=true.",
+        inputSchema: schema(properties: [
+          "channel_id": stringProperty("Channel or thread snowflake."),
+          "message_id": stringProperty("Exact message snowflake."),
+          "attachment_id": stringProperty("Attachment ID returned by discord_get_message."),
+          "destination_path": stringProperty("Absolute local output path. Existing files are never overwritten."),
+          "confirmed": booleanProperty("Must be true after the attachment and destination are final."),
+        ], required: ["channel_id", "message_id", "attachment_id", "destination_path", "confirmed"]),
+        annotations: mutationAnnotations(title: "Download Discord Attachment")
+      ),
+      Tool(
+        name: "discord_add_reaction",
+        description: "Add the authenticated user's reaction to one message. Requires confirmed=true.",
+        inputSchema: schema(properties: [
+          "channel_id": stringProperty("Channel or thread snowflake."),
+          "message_id": stringProperty("Message snowflake."),
+          "emoji": stringProperty("Unicode emoji or custom emoji name:id."),
+          "confirmed": booleanProperty("Must be true after the target and emoji are final."),
+        ], required: ["channel_id", "message_id", "emoji", "confirmed"]),
+        annotations: mutationAnnotations(title: "Add Discord Reaction")
+      ),
+      Tool(
+        name: "discord_remove_own_reaction",
+        description: "Remove the authenticated user's reaction from one message. Requires confirmed=true.",
+        inputSchema: schema(properties: [
+          "channel_id": stringProperty("Channel or thread snowflake."),
+          "message_id": stringProperty("Message snowflake."),
+          "emoji": stringProperty("Unicode emoji or custom emoji name:id."),
+          "confirmed": booleanProperty("Must be true after the target and emoji are final."),
+        ], required: ["channel_id", "message_id", "emoji", "confirmed"]),
+        annotations: mutationAnnotations(title: "Remove Own Discord Reaction")
+      ),
+      Tool(
+        name: "discord_list_reaction_users",
+        description: "List users who reacted to one message with the specified emoji.",
+        inputSchema: schema(properties: [
+          "channel_id": stringProperty("Channel or thread snowflake."),
+          "message_id": stringProperty("Message snowflake."),
+          "emoji": stringProperty("Unicode emoji or custom emoji name:id."),
+        ], required: ["channel_id", "message_id", "emoji"]),
+        annotations: readOnlyAnnotations(title: "List Discord Reaction Users")
+      ),
+      Tool(
         name: "discord_search_messages",
         description:
           "Search messages across one Discord server, or narrow the search to one text channel or thread with channel_id. Discord returns pages of 25 results and may briefly build an index.",
@@ -153,11 +233,12 @@ struct DiscordToolRouter: Sendable {
       Tool(
         name: "discord_post_message",
         description:
-          "Post a complete message as the authenticated user in an existing text channel or thread. Mentions are suppressed unless allow_everyone_mention is explicitly true. Requires confirmed=true.",
+          "Post a message and optionally upload one local file in an existing text channel or thread. Content may be empty when file_path is supplied. Mentions are suppressed unless allow_everyone_mention is explicitly true. Requires confirmed=true.",
         inputSchema: schema(
           properties: [
             "channel_id": stringProperty("Destination text channel or thread snowflake."),
             "content": stringProperty("Complete message content."),
+            "file_path": stringProperty("Optional absolute local path to one file, including ZIP files."),
             "reply_to_message_id": stringProperty("Optional message snowflake to reply to."),
             "allow_everyone_mention": booleanProperty(
               "Allow a visible @everyone or @here in content to notify the channel. Defaults to false."
@@ -192,15 +273,17 @@ struct DiscordToolRouter: Sendable {
       Tool(
         name: "discord_edit_message",
         description:
-          "Replace the complete content of a message authored by the authenticated user. An optional local image replaces all existing attachments. Archived threads are temporarily unarchived and restored. Requires confirmed=true.",
+          "Replace the complete content of a message authored by the authenticated user. file_path replaces existing attachments unless retain_attachment_ids lists those to keep. An empty retain_attachment_ids removes all attachments. Archived threads are temporarily unarchived and restored. Requires confirmed=true.",
         inputSchema: schema(
           properties: [
             "channel_id": stringProperty("Channel or thread snowflake containing the message."),
             "message_id": stringProperty("Message snowflake to edit."),
             "content": stringProperty("Complete replacement message content."),
             "image_path": stringProperty(
-              "Optional absolute local path to one replacement PNG, JPEG, GIF, or WebP image."
+              "Legacy alias for file_path; supply only one of them."
             ),
+            "file_path": stringProperty("Optional absolute local path to one replacement file. Replaces all existing attachments."),
+            "retain_attachment_ids": arrayProperty("Optional exact IDs of existing attachments to keep. Empty array removes all; omission preserves existing attachments when no file is supplied.", itemType: "string"),
             "confirmed": booleanProperty(
               "Must be true after the target message and replacement content are final."),
           ],
@@ -245,7 +328,7 @@ struct DiscordToolRouter: Sendable {
       Tool(
         name: "discord_create_forum_post",
         description:
-          "Create a Discord forum post and starter message as the authenticated user, optionally uploading one local image. Requires confirmed=true.",
+          "Create a Discord forum post and starter message as the authenticated user, optionally uploading one local file. Requires confirmed=true.",
         inputSchema: schema(
           properties: [
             "server_id": stringProperty("Discord server/guild snowflake."),
@@ -253,8 +336,9 @@ struct DiscordToolRouter: Sendable {
             "title": stringProperty("Forum post title."),
             "content": stringProperty("Complete starter message content."),
             "image_path": stringProperty(
-              "Optional absolute local path to one starter PNG, JPEG, GIF, or WebP image."
+              "Legacy alias for file_path; supply only one of them."
             ),
+            "file_path": stringProperty("Optional absolute local path to one starter file."),
             "applied_tag_ids": arrayProperty("Optional forum tag snowflakes.", itemType: "string"),
             "auto_archive_duration": integerProperty(
               "Minutes until inactivity archives the post: 60, 1440, 4320, or 10080. Defaults to 4320."
@@ -295,6 +379,32 @@ struct DiscordToolRouter: Sendable {
             includeActiveThreads: includeThreads
           )
         )
+
+      case "discord_create_channel":
+        try requireConfirmation(arguments)
+        guard let type = arguments["type"]?.intValue else {
+          throw ToolArgumentError.missing("type")
+        }
+        return try result(await operations.createChannel(
+          serverID: requiredString("server_id", in: arguments),
+          name: requiredString("name", in: arguments),
+          type: type,
+          parentID: arguments["parent_id"]?.stringValue))
+
+      case "discord_rename_channel":
+        try requireConfirmation(arguments)
+        return try result(await operations.renameChannel(
+          serverID: requiredString("server_id", in: arguments),
+          channelID: requiredString("channel_id", in: arguments),
+          expectedName: requiredString("expected_name", in: arguments),
+          name: requiredString("name", in: arguments)))
+
+      case "discord_delete_channel":
+        try requireConfirmation(arguments)
+        return try result(await operations.deleteChannel(
+          serverID: requiredString("server_id", in: arguments),
+          channelID: requiredString("channel_id", in: arguments),
+          expectedName: requiredString("expected_name", in: arguments)))
 
       case "discord_list_forum_posts":
         let serverID = try requiredString("server_id", in: arguments)
@@ -348,7 +458,8 @@ struct DiscordToolRouter: Sendable {
             channelID: requiredString("channel_id", in: arguments),
             content: requiredString("content", in: arguments),
             replyToMessageID: arguments["reply_to_message_id"]?.stringValue,
-            allowEveryoneMention: arguments["allow_everyone_mention"]?.boolValue ?? false
+            allowEveryoneMention: arguments["allow_everyone_mention"]?.boolValue ?? false,
+            filePath: arguments["file_path"]?.stringValue
           )
         )
 
@@ -363,14 +474,50 @@ struct DiscordToolRouter: Sendable {
 
       case "discord_edit_message":
         try requireConfirmation(arguments)
+        let retainAttachmentIDs = try arguments["retain_attachment_ids"].map { _ in
+          try stringArray("retain_attachment_ids", in: arguments)
+        }
         return try result(
           await operations.editMessage(
             channelID: requiredString("channel_id", in: arguments),
             messageID: requiredString("message_id", in: arguments),
             content: requiredString("content", in: arguments),
-            imagePath: arguments["image_path"]?.stringValue
+            imagePath: arguments["image_path"]?.stringValue,
+            filePath: arguments["file_path"]?.stringValue,
+            retainAttachmentIDs: retainAttachmentIDs
           )
         )
+
+      case "discord_download_attachment":
+        try requireConfirmation(arguments)
+        return try result(
+          await operations.downloadAttachment(
+            channelID: requiredString("channel_id", in: arguments),
+            messageID: requiredString("message_id", in: arguments),
+            attachmentID: requiredString("attachment_id", in: arguments),
+            destinationPath: requiredString("destination_path", in: arguments)
+          )
+        )
+
+      case "discord_add_reaction":
+        try requireConfirmation(arguments)
+        return try result(await operations.addReaction(
+          channelID: requiredString("channel_id", in: arguments),
+          messageID: requiredString("message_id", in: arguments),
+          emoji: requiredString("emoji", in: arguments)))
+
+      case "discord_remove_own_reaction":
+        try requireConfirmation(arguments)
+        return try result(await operations.removeOwnReaction(
+          channelID: requiredString("channel_id", in: arguments),
+          messageID: requiredString("message_id", in: arguments),
+          emoji: requiredString("emoji", in: arguments)))
+
+      case "discord_list_reaction_users":
+        return try result(await operations.reactionUsers(
+          channelID: requiredString("channel_id", in: arguments),
+          messageID: requiredString("message_id", in: arguments),
+          emoji: requiredString("emoji", in: arguments)))
 
       case "discord_delete_messages":
         let channelID = try requiredString("channel_id", in: arguments)
@@ -412,7 +559,8 @@ struct DiscordToolRouter: Sendable {
             content: requiredString("content", in: arguments),
             appliedTagIDs: tagIDs,
             autoArchiveDuration: duration,
-            imagePath: arguments["image_path"]?.stringValue
+            imagePath: arguments["image_path"]?.stringValue,
+            filePath: arguments["file_path"]?.stringValue
           )
         )
 

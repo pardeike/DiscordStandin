@@ -42,6 +42,23 @@ public struct DiscordRESTClient: Sendable {
     try await get(path: "guilds/\(guildID)/channels")
   }
 
+  public func channel(channelID: String) async throws -> DiscordChannel {
+    try await get(path: "channels/\(channelID)")
+  }
+
+  public func createChannel(guildID: String, name: String, type: Int, parentID: String? = nil) async throws -> DiscordChannel {
+    try await post(path: "guilds/\(guildID)/channels", body: ChannelCreation(name: name, type: type, parentID: parentID))
+  }
+
+  public func renameChannel(channelID: String, name: String) async throws -> DiscordChannel {
+    try await patch(path: "channels/\(channelID)", body: ChannelRename(name: name))
+  }
+
+  public func deleteChannel(channelID: String) async throws -> DiscordChannel {
+    let (data, _) = try await requestData(method: "DELETE", path: "channels/\(channelID)")
+    return try decode(data)
+  }
+
   public func activeThreads(guildID: String) async throws -> DiscordThreadList {
     try await get(path: "guilds/\(guildID)/threads/active")
   }
@@ -158,11 +175,14 @@ public struct DiscordRESTClient: Sendable {
     channelID: String,
     content: String,
     replyToMessageID: String? = nil,
-    allowEveryoneMention: Bool = false
+    allowEveryoneMention: Bool = false,
+    filePath: String? = nil
   ) async throws -> DiscordMessage {
-    guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+    guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || filePath != nil else {
       throw DiscordStandinError.emptyContent
     }
+    let file = try filePath.map(Self.uploadFile)
+    let attachment = try await uploadAttachmentIfNeeded(file, channelID: channelID)
 
     let reference = replyToMessageID.map {
       MessageReference(messageID: $0, channelID: channelID)
@@ -175,8 +195,11 @@ public struct DiscordRESTClient: Sendable {
         parse: allowEveryoneMention ? ["everyone"] : []
       ),
       messageReference: reference,
-      attachments: nil
+      attachments: attachment.map { [$0] }
     )
+    if let file, attachment?.uploadedFilename == nil {
+      return try await multipart(method: "POST", path: "channels/\(channelID)/messages", body: payload, file: file)
+    }
     return try await post(
       path: "channels/\(channelID)/messages",
       body: payload
@@ -196,26 +219,51 @@ public struct DiscordRESTClient: Sendable {
     channelID: String,
     messageID: String,
     content: String,
-    imagePath: String? = nil
+    imagePath: String? = nil,
+    filePath: String? = nil,
+    retainAttachmentIDs: [String]? = nil
   ) async throws -> DiscordMessage {
-    guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+    guard imagePath == nil || filePath == nil else {
+      throw DiscordStandinError.invalidFile("supply file_path or image_path, not both")
+    }
+    guard !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || imagePath != nil || filePath != nil else {
       throw DiscordStandinError.emptyContent
     }
 
-    let image = try imagePath.map(Self.imageFile)
+    let file = try (filePath ?? imagePath).map(Self.uploadFile)
+    let retained: [UploadAttachment]?
+    if let retainAttachmentIDs {
+      let existing = try await message(channelID: channelID, messageID: messageID).attachments ?? []
+      guard Set(retainAttachmentIDs).count == retainAttachmentIDs.count,
+        retainAttachmentIDs.allSatisfy({ id in existing.contains(where: { $0.id == id }) })
+      else {
+        throw DiscordStandinError.invalidFile("retain_attachment_ids must name unique attachments on the message")
+      }
+      retained = try retainAttachmentIDs.map { id in
+        guard let attachment = existing.first(where: { $0.id == id }) else {
+          throw DiscordStandinError.invalidFile("attachment is no longer on the message: \(id)")
+        }
+        guard let numericID = Int(id) else {
+          throw DiscordStandinError.invalidFile("invalid attachment ID: \(id)")
+        }
+        return UploadAttachment(id: numericID, filename: attachment.filename)
+      }
+    } else {
+      retained = nil
+    }
+    let attachment = try await uploadAttachmentIfNeeded(file, channelID: channelID)
     let payload = EditMessage(
       content: content,
       allowedMentions: AllowedMentions(parse: []),
-      attachments: image.map {
-        [UploadAttachment(id: 0, filename: $0.filename)]
-      }
+      attachments: file == nil && retained == nil ? nil :
+        (retained ?? []) + (attachment.map { [$0] } ?? [])
     )
-    if let image {
+    if let file, attachment?.uploadedFilename == nil {
       return try await multipart(
         method: "PATCH",
         path: "channels/\(channelID)/messages/\(messageID)",
         body: payload,
-        file: image
+        file: file
       )
     }
     return try await patch(
@@ -231,6 +279,20 @@ public struct DiscordRESTClient: Sendable {
     try await deleteWithoutBody(
       path: "channels/\(channelID)/messages/\(messageID)"
     )
+  }
+
+  public func addReaction(channelID: String, messageID: String, emoji: String) async throws {
+    let path = "channels/\(channelID)/messages/\(messageID)/reactions/\(emoji)/@me"
+    _ = try await requestData(method: "PUT", path: path)
+  }
+
+  public func removeOwnReaction(channelID: String, messageID: String, emoji: String) async throws {
+    let path = "channels/\(channelID)/messages/\(messageID)/reactions/\(emoji)/@me"
+    try await deleteWithoutBody(path: path)
+  }
+
+  public func reactionUsers(channelID: String, messageID: String, emoji: String) async throws -> [DiscordUser] {
+    try await get(path: "channels/\(channelID)/messages/\(messageID)/reactions/\(emoji)")
   }
 
   public func setThreadArchived(
@@ -249,24 +311,27 @@ public struct DiscordRESTClient: Sendable {
     content: String,
     appliedTagIDs: [String],
     autoArchiveDuration: Int,
-    imagePath: String? = nil
+    imagePath: String? = nil,
+    filePath: String? = nil
   ) async throws -> DiscordChannel {
+    guard imagePath == nil || filePath == nil else {
+      throw DiscordStandinError.invalidFile("supply file_path or image_path, not both")
+    }
     guard !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
       !content.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     else {
       throw DiscordStandinError.emptyContent
     }
 
-    let image = try imagePath.map(Self.imageFile)
+    let file = try (filePath ?? imagePath).map(Self.uploadFile)
+    let attachment = try await uploadAttachmentIfNeeded(file, channelID: channelID)
     let starter = NewMessage(
       content: content,
       nonce: Self.nonce(),
       tts: false,
       allowedMentions: AllowedMentions(parse: []),
       messageReference: nil,
-      attachments: image.map {
-        [UploadAttachment(id: 0, filename: $0.filename)]
-      }
+      attachments: attachment.map { [$0] }
     )
     let payload = NewForumPost(
       name: title,
@@ -275,12 +340,12 @@ public struct DiscordRESTClient: Sendable {
       appliedTags: appliedTagIDs
     )
     let path = "channels/\(channelID)/threads"
-    if let image {
+    if let file, attachment?.uploadedFilename == nil {
       return try await multipart(
         method: "POST",
         path: path,
         body: payload,
-        file: image
+        file: file
       )
     }
     return try await post(path: path, body: payload)
@@ -338,7 +403,7 @@ public struct DiscordRESTClient: Sendable {
     method: String,
     path: String,
     body: Body,
-    file: ImageFile
+    file: UploadFile
   ) async throws -> Response {
     let boundary = "DiscordStandin-\(UUID().uuidString)"
     let payload = try encoder.encode(body)
@@ -354,10 +419,11 @@ public struct DiscordRESTClient: Sendable {
       "Content-Disposition: form-data; name=\"files[0]\"; filename=\"\(file.filename)\"\r\n"
     )
     bodyData.appendUTF8("Content-Type: \(file.contentType)\r\n\r\n")
-    bodyData.append(file.data)
+    let fileData = try Data(contentsOf: file.url)
+    bodyData.append(fileData)
     bodyData.appendUTF8("\r\n--\(boundary)--\r\n")
     guard bodyData.count <= 25 * 1_024 * 1_024 else {
-      throw DiscordStandinError.invalidImage(
+      throw DiscordStandinError.invalidFile(
         "multipart request exceeds Discord's 25 MiB limit"
       )
     }
@@ -368,6 +434,35 @@ public struct DiscordRESTClient: Sendable {
       contentType: "multipart/form-data; boundary=\(boundary)"
     )
     return try decode(data)
+  }
+
+  private func uploadAttachmentIfNeeded(_ file: UploadFile?, channelID: String) async throws -> UploadAttachment? {
+    guard let file else { return nil }
+    // The documented message request limit is 25 MiB. Leave room for multipart headers and JSON.
+    guard file.size > 24 * 1_024 * 1_024 else {
+      return UploadAttachment(id: 0, filename: file.filename)
+    }
+    let slot: CloudUploadResponse = try await post(
+      path: "channels/\(channelID)/attachments",
+      body: CloudUploadRequest(files: [CloudUploadFile(filename: file.filename, fileSize: file.size)])
+    )
+    guard let entry = slot.attachments.first,
+      let url = URL(string: entry.uploadURL), url.scheme == "https",
+      url.host?.hasSuffix(".storage.googleapis.com") == true
+    else {
+      throw DiscordStandinError.invalidFile("Discord returned an invalid upload URL")
+    }
+    var request = URLRequest(url: url)
+    request.httpMethod = "PUT"
+    request.timeoutInterval = 3_600
+    request.setValue(file.contentType, forHTTPHeaderField: "Content-Type")
+    let (_, response) = try await transport.upload(file: file.url, to: request)
+    guard let httpResponse = response as? HTTPURLResponse,
+      (200..<300).contains(httpResponse.statusCode)
+    else {
+      throw DiscordStandinError.invalidFile("Discord's file storage rejected the upload")
+    }
+    return UploadAttachment(id: 0, filename: file.filename, uploadedFilename: entry.uploadFilename)
   }
 
   private func requestData(
@@ -482,17 +577,17 @@ public struct DiscordRESTClient: Sendable {
     )
   }
 
-  private static func imageFile(atPath path: String) throws -> ImageFile {
+  private static func uploadFile(atPath path: String) throws -> UploadFile {
     let expandedPath = (path as NSString).expandingTildeInPath
     guard (expandedPath as NSString).isAbsolutePath else {
-      throw DiscordStandinError.invalidImage("image_path must be absolute")
+      throw DiscordStandinError.invalidFile("file path must be absolute")
     }
     let url = URL(fileURLWithPath: expandedPath, isDirectory: false)
     var isDirectory: ObjCBool = false
     guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory),
       !isDirectory.boolValue
     else {
-      throw DiscordStandinError.invalidImage("file does not exist: \(expandedPath)")
+      throw DiscordStandinError.invalidFile("file does not exist: \(expandedPath)")
     }
     let contentType: String
     switch url.pathExtension.lowercased() {
@@ -504,25 +599,29 @@ public struct DiscordRESTClient: Sendable {
       contentType = "image/gif"
     case "webp":
       contentType = "image/webp"
+    case "zip":
+      contentType = "application/zip"
+    case "pdf":
+      contentType = "application/pdf"
+    case "txt":
+      contentType = "text/plain"
     default:
-      throw DiscordStandinError.invalidImage(
-        "supported extensions are png, jpg, jpeg, gif, and webp"
-      )
+      contentType = "application/octet-stream"
     }
-    let data: Data
+    let size: Int
     do {
-      data = try Data(contentsOf: url, options: .mappedIfSafe)
+      size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
     } catch {
-      throw DiscordStandinError.invalidImage(error.localizedDescription)
+      throw DiscordStandinError.invalidFile(error.localizedDescription)
     }
-    guard !data.isEmpty else {
-      throw DiscordStandinError.invalidImage("file is empty")
+    guard size > 0 else {
+      throw DiscordStandinError.invalidFile("file is empty")
     }
     let filename = url.lastPathComponent
       .replacingOccurrences(of: "\"", with: "_")
       .replacingOccurrences(of: "\r", with: "_")
       .replacingOccurrences(of: "\n", with: "_")
-    return ImageFile(data: data, filename: filename, contentType: contentType)
+    return UploadFile(url: url, size: size, filename: filename, contentType: contentType)
   }
 
   private static func rateLimitRouteKey(method: String, url: URL) -> String {
@@ -621,16 +720,74 @@ private struct EditMessage: Codable, Sendable {
 private struct UploadAttachment: Codable, Sendable {
   let id: Int
   let filename: String
+  let uploadedFilename: String?
+
+  init(id: Int, filename: String, uploadedFilename: String? = nil) {
+    self.id = id
+    self.filename = filename
+    self.uploadedFilename = uploadedFilename
+  }
+
+  enum CodingKeys: String, CodingKey {
+    case id
+    case filename
+    case uploadedFilename = "uploaded_filename"
+  }
 }
 
-private struct ImageFile: Sendable {
-  let data: Data
+private struct UploadFile: Sendable {
+  let url: URL
+  let size: Int
   let filename: String
   let contentType: String
 }
 
+private struct CloudUploadRequest: Encodable, Sendable {
+  let files: [CloudUploadFile]
+}
+
+private struct CloudUploadFile: Encodable, Sendable {
+  let filename: String
+  let fileSize: Int
+
+  enum CodingKeys: String, CodingKey {
+    case filename
+    case fileSize = "file_size"
+  }
+}
+
+private struct CloudUploadResponse: Decodable, Sendable {
+  let attachments: [CloudUploadEntry]
+}
+
+private struct CloudUploadEntry: Decodable, Sendable {
+  let uploadURL: String
+  let uploadFilename: String
+
+  enum CodingKeys: String, CodingKey {
+    case uploadURL = "upload_url"
+    case uploadFilename = "upload_filename"
+  }
+}
+
 private struct ThreadArchiveUpdate: Codable, Sendable {
   let archived: Bool
+}
+
+private struct ChannelCreation: Codable, Sendable {
+  let name: String
+  let type: Int
+  let parentID: String?
+
+  enum CodingKeys: String, CodingKey {
+    case name
+    case type
+    case parentID = "parent_id"
+  }
+}
+
+private struct ChannelRename: Codable, Sendable {
+  let name: String
 }
 
 extension Data {

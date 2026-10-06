@@ -210,18 +210,109 @@ public struct DiscordOperations: Sendable {
     channelID: String,
     content: String,
     replyToMessageID: String?,
-    allowEveryoneMention: Bool = false
+    allowEveryoneMention: Bool = false,
+    filePath: String? = nil
   ) async throws -> DiscordPostReceipt {
     let message = try await authenticatedClient().postMessage(
       channelID: channelID,
       content: content,
       replyToMessageID: replyToMessageID,
-      allowEveryoneMention: allowEveryoneMention
+      allowEveryoneMention: allowEveryoneMention,
+      filePath: filePath
     )
     let url = message.guildID.map {
       "https://discord.com/channels/\($0)/\(message.channelID)/\(message.id)"
     }
     return DiscordPostReceipt(message: message, url: url)
+  }
+
+  public func downloadAttachment(
+    channelID: String,
+    messageID: String,
+    attachmentID: String,
+    destinationPath: String
+  ) async throws -> DiscordAttachmentDownloadReceipt {
+    let path = (destinationPath as NSString).expandingTildeInPath
+    guard (path as NSString).isAbsolutePath else {
+      throw DiscordStandinError.attachment("destination_path must be absolute")
+    }
+    let destination = URL(fileURLWithPath: path)
+    guard !FileManager.default.fileExists(atPath: destination.path) else {
+      throw DiscordStandinError.attachment("destination already exists: \(path)")
+    }
+    guard FileManager.default.fileExists(atPath: destination.deletingLastPathComponent().path) else {
+      throw DiscordStandinError.attachment("destination directory does not exist: \(path)")
+    }
+    let message = try await authenticatedClient().message(
+      channelID: channelID, messageID: messageID)
+    guard let attachment = message.attachments?.first(where: { $0.id == attachmentID }) else {
+      throw DiscordStandinError.attachment("attachment ID is not on the specified message")
+    }
+    guard let url = URL(string: attachment.url), url.scheme == "https",
+      ["cdn.discordapp.com", "cdn.discord.com", "media.discordapp.net"].contains(url.host)
+    else {
+      throw DiscordStandinError.attachment("message returned an unexpected attachment URL")
+    }
+    let (temporary, response) = try await transport.download(from: url)
+    guard let httpResponse = response as? HTTPURLResponse, (200..<300).contains(httpResponse.statusCode) else {
+      throw DiscordStandinError.attachment("download returned an unsuccessful HTTP response")
+    }
+    do {
+      try FileManager.default.moveItem(at: temporary, to: destination)
+    } catch {
+      throw DiscordStandinError.attachment(error.localizedDescription)
+    }
+    return DiscordAttachmentDownloadReceipt(
+      attachmentID: attachmentID,
+      filename: attachment.filename,
+      destinationPath: destination.path,
+      size: (try? destination.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+    )
+  }
+
+  public func addReaction(channelID: String, messageID: String, emoji: String) async throws -> Bool {
+    try await authenticatedClient().addReaction(channelID: channelID, messageID: messageID, emoji: emoji)
+    return true
+  }
+
+  public func removeOwnReaction(channelID: String, messageID: String, emoji: String) async throws -> Bool {
+    try await authenticatedClient().removeOwnReaction(channelID: channelID, messageID: messageID, emoji: emoji)
+    return true
+  }
+
+  public func reactionUsers(channelID: String, messageID: String, emoji: String) async throws -> [DiscordUser] {
+    try await authenticatedClient().reactionUsers(channelID: channelID, messageID: messageID, emoji: emoji)
+  }
+
+  public func createChannel(serverID: String, name: String, type: Int, parentID: String? = nil) async throws -> DiscordChannel {
+    guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, name.count <= 100 else {
+      throw DiscordStandinError.channel("name must contain 1 to 100 characters")
+    }
+    guard [0, 2, 4, 5, 13, 15, 16].contains(type) else {
+      throw DiscordStandinError.channel("unsupported channel type")
+    }
+    return try await authenticatedClient().createChannel(guildID: serverID, name: name, type: type, parentID: parentID)
+  }
+
+  public func renameChannel(serverID: String, channelID: String, expectedName: String, name: String) async throws -> DiscordChannel {
+    guard !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty, name.count <= 100 else {
+      throw DiscordStandinError.channel("name must contain 1 to 100 characters")
+    }
+    let client = try authenticatedClient()
+    let current = try await client.channel(channelID: channelID)
+    guard current.guildID == serverID, current.name == expectedName else {
+      throw DiscordStandinError.channel("channel server or current name does not match")
+    }
+    return try await client.renameChannel(channelID: channelID, name: name)
+  }
+
+  public func deleteChannel(serverID: String, channelID: String, expectedName: String) async throws -> DiscordChannel {
+    let client = try authenticatedClient()
+    let current = try await client.channel(channelID: channelID)
+    guard current.guildID == serverID, current.name == expectedName else {
+      throw DiscordStandinError.channel("channel server or current name does not match")
+    }
+    return try await client.deleteChannel(channelID: channelID)
   }
 
   public func publishMessage(
@@ -255,7 +346,9 @@ public struct DiscordOperations: Sendable {
     channelID: String,
     messageID: String,
     content: String,
-    imagePath: String? = nil
+    imagePath: String? = nil,
+    filePath: String? = nil,
+    retainAttachmentIDs: [String]? = nil
   ) async throws -> DiscordMessageResult {
     let client = try authenticatedClient()
     let message: DiscordMessage
@@ -264,7 +357,9 @@ public struct DiscordOperations: Sendable {
         channelID: channelID,
         messageID: messageID,
         content: content,
-        imagePath: imagePath
+        imagePath: imagePath,
+        filePath: filePath,
+        retainAttachmentIDs: retainAttachmentIDs
       )
     } catch let error as DiscordStandinError {
       guard Self.isArchivedThreadError(error) else { throw error }
@@ -274,7 +369,9 @@ public struct DiscordOperations: Sendable {
           channelID: channelID,
           messageID: messageID,
           content: content,
-          imagePath: imagePath
+          imagePath: imagePath,
+          filePath: filePath,
+          retainAttachmentIDs: retainAttachmentIDs
         )
       } catch {
         _ = try? await client.setThreadArchived(channelID: channelID, archived: true)
@@ -359,7 +456,8 @@ public struct DiscordOperations: Sendable {
     content: String,
     appliedTagIDs: [String],
     autoArchiveDuration: Int,
-    imagePath: String? = nil
+    imagePath: String? = nil,
+    filePath: String? = nil
   ) async throws -> DiscordForumPostReceipt {
     let thread = try await authenticatedClient().createForumPost(
       channelID: forumChannelID,
@@ -367,7 +465,8 @@ public struct DiscordOperations: Sendable {
       content: content,
       appliedTagIDs: appliedTagIDs,
       autoArchiveDuration: autoArchiveDuration,
-      imagePath: imagePath
+      imagePath: imagePath,
+      filePath: filePath
     )
     return DiscordForumPostReceipt(
       thread: thread,

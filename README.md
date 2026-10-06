@@ -95,15 +95,22 @@ Useful local checks:
 | `discord_logout` | Deletes the stored token after explicit confirmation. |
 | `discord_list_servers` | Lists servers visible to the account. |
 | `discord_list_channels` | Lists a server's channels and, optionally, active threads. |
+| `discord_create_channel` | Creates a server channel. |
+| `discord_rename_channel` | Renames a server channel after checking its current name. |
+| `discord_delete_channel` | Permanently deletes a server channel after checking its current name. |
 | `discord_list_forum_posts` | Lists active and cursor-paginated public archived posts in a forum channel. |
 | `discord_get_channel_messages` | Reads recent or cursor-relative messages in a channel or thread. |
 | `discord_get_message` | Reads one exact message, including embeds and attachments. |
+| `discord_download_attachment` | Saves an exact message attachment to a new local file. |
+| `discord_add_reaction` | Adds the account's reaction to a message. |
+| `discord_remove_own_reaction` | Removes the account's reaction from a message. |
+| `discord_list_reaction_users` | Lists users who reacted with an emoji. |
 | `discord_search_messages` | Searches a server, optionally scoped to a channel or thread. |
-| `discord_post_message` | Posts a message to a text channel or existing thread, with opt-in `@everyone`/`@here` parsing. |
+| `discord_post_message` | Posts a message or one local file to a text channel or existing thread, with opt-in `@everyone`/`@here` parsing. |
 | `discord_publish_message` | Publishes/crossposts an announcement-channel message, safely succeeding when it was already published. |
-| `discord_edit_message` | Replaces an existing message and optionally its single image, temporarily unarchiving and restoring its thread when necessary. |
+| `discord_edit_message` | Replaces an existing message and optionally its attachments with one local file, temporarily unarchiving and restoring its thread when necessary. |
 | `discord_delete_messages` | Dry-runs or permanently deletes an exact guarded batch of messages from one channel. |
-| `discord_create_forum_post` | Creates a forum post with its starter message and an optional local image. |
+| `discord_create_forum_post` | Creates a forum post with its starter message and an optional local file. |
 
 Posting, publishing, and editing tools require `confirmed: true` in the call.
 This makes the final destination and complete message explicit at the mutation
@@ -122,12 +129,24 @@ supplied IDs. The tool rejects duplicate IDs and preflights the complete batch
 before deleting its first message. Its receipt lists every deletion and any
 per-message failure so a partial result is never hidden.
 
-`discord_create_forum_post` and `discord_edit_message` accept an optional
-`image_path` pointing to a local PNG, JPEG, GIF, or WebP file. `~` is expanded.
-Forum creation adds that image to the starter message. On edit, omitting
-`image_path` preserves existing attachments; supplying it replaces all existing
-attachments with the single uploaded image. The complete multipart request must
-fit Discord's 25 MiB request limit.
+`discord_post_message`, `discord_create_forum_post`, and `discord_edit_message`
+accept `file_path` pointing to one local file, including ZIP files. `~` is
+expanded. A post may contain just the file and empty content. Forum creation
+adds the file to the starter message. On edit, omitting `file_path` preserves
+existing attachments; supplying it replaces all existing attachments with the
+uploaded file. The existing `image_path` parameter remains an alias on edit and
+forum creation; do not supply both paths. On edit, `retain_attachment_ids`
+selects existing attachments to keep, and `[]` removes all attachments. Uploads
+up to 24 MiB use the documented multipart message API. Larger files use Discord's
+cloud attachment flow and stream from disk. Discord determines the effective
+per-file limit for the account and destination; a live Nitro limit has not been
+verified here. The cloud upload route is not part of Discord's published
+developer API and could change.
+
+`discord_download_attachment` takes a `channel_id`, `message_id`, and
+`attachment_id` from `discord_get_message`, plus a new `destination_path`. It
+refuses to overwrite an existing file. Channel rename and deletion require
+`expected_name` so they abort if the target's current name has changed.
 
 ## Design
 

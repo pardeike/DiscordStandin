@@ -126,6 +126,66 @@ struct DiscordRESTClientTests {
     #expect((mentions["parse"] as? [String]) == [])
   }
 
+  @Test("Posts a ZIP attachment without message text")
+  func postZipFile() async throws {
+    let file = Data([0x50, 0x4B, 0x03, 0x04, 0x01])
+    let fileURL = try temporaryFile(named: "release.zip", data: file)
+    defer { try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent()) }
+    let transport = StubTransport(routes: [
+      "/api/v9/channels/100/messages": [
+        .json(#"{"id":"200","channel_id":"100","guild_id":"300","content":"","timestamp":"2026-07-26T00:00:00.000000+00:00","author":null,"flags":0}"#)
+      ]
+    ])
+    let client = DiscordRESTClient(token: "secret-user-token", baseURL: baseURL,
+      transport: transport, profile: profile, rateLimiter: DiscordRateLimiter())
+
+    _ = try await client.postMessage(channelID: "100", content: "", filePath: fileURL.path)
+
+    let request = try #require(await transport.recordedRequests().first)
+    #expect(request.httpMethod == "POST")
+    #expect(request.httpBody?.range(of: file) != nil)
+    let body = try #require(request.httpBody)
+    #expect(String(decoding: body, as: UTF8.self).contains("Content-Type: application/zip"))
+    let payload = try multipartPayload(from: request)
+    #expect(payload["content"] as? String == "")
+    let attachments = try #require(payload["attachments"] as? [[String: Any]])
+    #expect(attachments.first?["filename"] as? String == "release.zip")
+  }
+
+  @Test("Large ZIP uses a cloud upload slot before posting")
+  func postLargeZipFile() async throws {
+    let fileURL = try temporaryFile(named: "large.zip", data: Data([0x50, 0x4B]))
+    defer { try? FileManager.default.removeItem(at: fileURL.deletingLastPathComponent()) }
+    let handle = try FileHandle(forWritingTo: fileURL)
+    try handle.truncate(atOffset: 24 * 1_024 * 1_024 + 1)
+    try handle.close()
+    let uploadURL = "https://discord-attachments-uploads-prd.storage.googleapis.com/test.zip?upload_id=abc"
+    let transport = StubTransport(routes: [
+      "/api/v9/channels/100/attachments": [
+        .json(#"{"attachments":[{"upload_url":"https://discord-attachments-uploads-prd.storage.googleapis.com/test.zip?upload_id=abc","upload_filename":"cloud/test.zip"}]}"#)
+      ],
+      "/test.zip": [.json("", status: 200)],
+      "/api/v9/channels/100/messages": [
+        .json(#"{"id":"200","channel_id":"100","guild_id":"300","content":"","timestamp":"2026-07-26T00:00:00.000000+00:00","author":null,"flags":0}"#)
+      ],
+    ])
+    let client = DiscordRESTClient(token: "secret-user-token", baseURL: baseURL,
+      transport: transport, profile: profile, rateLimiter: DiscordRateLimiter())
+
+    _ = try await client.postMessage(channelID: "100", content: "", filePath: fileURL.path)
+
+    let requests = await transport.recordedRequests()
+    #expect(requests.count == 3)
+    #expect(requests[0].httpMethod == "POST")
+    #expect(requests[1].url?.absoluteString == uploadURL)
+    #expect(requests[1].httpMethod == "PUT")
+    #expect(requests[1].value(forHTTPHeaderField: "Authorization") == nil)
+    let body = try #require(requests[2].httpBody)
+    let payload = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+    let attachments = try #require(payload["attachments"] as? [[String: Any]])
+    #expect(attachments.first?["uploaded_filename"] as? String == "cloud/test.zip")
+  }
+
   @Test("Posts a message with an explicitly enabled everyone mention")
   func postMessageEveryoneMention() async throws {
     let transport = StubTransport(routes: [
@@ -274,6 +334,77 @@ struct DiscordRESTClientTests {
     let attachments = try #require(payload["attachments"] as? [[String: Any]])
     #expect(attachments.first?["id"] as? Int == 0)
     #expect(attachments.first?["filename"] as? String == "Preview.png")
+  }
+
+  @Test("Edit retains only selected existing attachments")
+  func editRetainedAttachments() async throws {
+    let existing = """
+      {"id":"200","channel_id":"100","guild_id":"300","content":"old","timestamp":"2026-07-26T00:00:00.000000+00:00","author":null,"flags":0,"attachments":[
+        {"id":"201","filename":"keep.zip","url":"https://cdn.discordapp.com/keep.zip"},
+        {"id":"202","filename":"drop.txt","url":"https://cdn.discordapp.com/drop.txt"}]}
+      """
+    let transport = StubTransport(routes: [
+      "/api/v9/channels/100/messages": [.json("[\(existing)]")],
+      "/api/v9/channels/100/messages/200": [.json(existing)],
+    ])
+    let client = DiscordRESTClient(token: "secret-user-token", baseURL: baseURL,
+      transport: transport, profile: profile, rateLimiter: DiscordRateLimiter())
+
+    _ = try await client.editMessage(channelID: "100", messageID: "200", content: "new",
+      retainAttachmentIDs: ["201"])
+
+    let requests = await transport.recordedRequests()
+    let body = try #require(requests.last?.httpBody)
+    let payload = try #require(JSONSerialization.jsonObject(with: body) as? [String: Any])
+    let attachments = try #require(payload["attachments"] as? [[String: Any]])
+    #expect(attachments.count == 1)
+    #expect(attachments[0]["id"] as? Int == 201)
+    #expect(attachments[0]["filename"] as? String == "keep.zip")
+  }
+
+  @Test("Downloads one exact attachment without overwriting")
+  func downloadAttachment() async throws {
+    let message = """
+      {"id":"200","channel_id":"100","guild_id":"300","content":"","timestamp":"2026-07-26T00:00:00.000000+00:00","author":null,"flags":0,"attachments":[
+        {"id":"201","filename":"release.zip","url":"https://cdn.discordapp.com/release.zip"}]}
+      """
+    let transport = StubTransport(routes: [
+      "/api/v9/channels/100/messages": [.json("[\(message)]")],
+      "/release.zip": [.json("ZIP")],
+    ])
+    let operations = DiscordOperations(credentials: MemoryCredentialStore(token: "token"),
+      baseURL: baseURL, transport: transport, profile: profile)
+    let destination = FileManager.default.temporaryDirectory.appendingPathComponent("DiscordStandin-\(UUID().uuidString).zip")
+    defer { try? FileManager.default.removeItem(at: destination) }
+
+    let receipt = try await operations.downloadAttachment(channelID: "100", messageID: "200",
+      attachmentID: "201", destinationPath: destination.path)
+
+    #expect(receipt.filename == "release.zip")
+    #expect(receipt.size == 3)
+    #expect(try Data(contentsOf: destination) == Data("ZIP".utf8))
+    await #expect(throws: DiscordStandinError.self) {
+      try await operations.downloadAttachment(channelID: "100", messageID: "200",
+        attachmentID: "201", destinationPath: destination.path)
+    }
+  }
+
+  @Test("Channel deletion checks the server and expected name before DELETE")
+  func deleteChannelPreflight() async throws {
+    let channel = #"{"id":"100","type":0,"guild_id":"300","name":"release-notes"}"#
+    let transport = StubTransport(routes: [
+      "/api/v9/channels/100": [.json(channel), .json(channel), .json(channel)],
+    ])
+    let operations = DiscordOperations(credentials: MemoryCredentialStore(token: "token"),
+      baseURL: baseURL, transport: transport, profile: profile)
+
+    await #expect(throws: DiscordStandinError.self) {
+      try await operations.deleteChannel(serverID: "wrong", channelID: "100", expectedName: "release-notes")
+    }
+    await #expect(throws: DiscordStandinError.self) {
+      try await operations.deleteChannel(serverID: "300", channelID: "100", expectedName: "wrong")
+    }
+    #expect(await transport.recordedRequests().allSatisfy { $0.httpMethod == "GET" })
   }
 
   @Test("Deletes one exact message with no request body")
@@ -802,15 +933,19 @@ struct DiscordOperationsTests {
 }
 
 private func temporaryImage(data: Data) throws -> URL {
+  try temporaryFile(named: "Preview.png", data: data)
+}
+
+private func temporaryFile(named filename: String, data: Data) throws -> URL {
   let directory = FileManager.default.temporaryDirectory
     .appendingPathComponent("DiscordStandinTests-\(UUID().uuidString)", isDirectory: true)
   try FileManager.default.createDirectory(
     at: directory,
     withIntermediateDirectories: true
   )
-  let imageURL = directory.appendingPathComponent("Preview.png")
-  try data.write(to: imageURL)
-  return imageURL
+  let fileURL = directory.appendingPathComponent(filename)
+  try data.write(to: fileURL)
+  return fileURL
 }
 
 private func messageListJSON(id: String, content: String) -> String {
@@ -884,6 +1019,17 @@ private actor StubTransport: DiscordHTTPTransport {
       headerFields: headers
     )!
     return (next.data, response)
+  }
+
+  func upload(file: URL, to request: URLRequest) async throws -> (Data, URLResponse) {
+    try await data(for: request)
+  }
+
+  func download(from url: URL) async throws -> (URL, URLResponse) {
+    let (data, response) = try await self.data(for: URLRequest(url: url))
+    let temporary = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+    try data.write(to: temporary)
+    return (temporary, response)
   }
 
   func recordedRequests() -> [URLRequest] {

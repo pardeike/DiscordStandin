@@ -76,10 +76,14 @@ class HandshakeTests(unittest.TestCase):
         self.send({"jsonrpc": "2.0", "id": 2, "method": "tools/list", "params": {}})
         tools = self.response(2)["result"]["tools"]
         names = {tool["name"] for tool in tools}
-        self.assertEqual(len(tools), 14)
-        self.assertEqual(len(names), 14)
+        self.assertEqual(len(tools), 21)
+        self.assertEqual(len(names), 21)
         self.assertIn("discord_get_message", names)
         self.assertIn("discord_delete_messages", names)
+        self.assertIn("discord_download_attachment", names)
+        self.assertIn("discord_add_reaction", names)
+        self.assertIn("discord_create_channel", names)
+        self.assertIn("discord_delete_channel", names)
         self.send({"jsonrpc": "2.0", "id": 3, "method": "ping"})
         self.assertEqual(self.response(3)["result"], {})
         # The adapter must not swallow ordinary request errors after initialization.

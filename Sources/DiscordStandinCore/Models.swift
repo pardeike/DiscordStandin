@@ -190,6 +190,20 @@ public struct DiscordAttachment: Codable, Sendable, Equatable {
   }
 }
 
+public struct DiscordAttachmentDownloadReceipt: Codable, Sendable {
+  public let attachmentID: String
+  public let filename: String
+  public let destinationPath: String
+  public let size: Int
+
+  public init(attachmentID: String, filename: String, destinationPath: String, size: Int) {
+    self.attachmentID = attachmentID
+    self.filename = filename
+    self.destinationPath = destinationPath
+    self.size = size
+  }
+}
+
 public struct DiscordEmbedField: Codable, Sendable, Equatable {
   public let name: String
   public let value: String

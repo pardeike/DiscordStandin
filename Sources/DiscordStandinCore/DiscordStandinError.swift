@@ -4,7 +4,9 @@ import Security
 public enum DiscordStandinError: LocalizedError, Sendable {
   case noStoredSession
   case emptyContent
-  case invalidImage(String)
+  case invalidFile(String)
+  case attachment(String)
+  case channel(String)
   case invalidResponse
   case invalidURL
   case sessionRejected
@@ -24,8 +26,12 @@ public enum DiscordStandinError: LocalizedError, Sendable {
       "No Discord session is stored. Run the login flow first."
     case .emptyContent:
       "Discord message content cannot be empty."
-    case .invalidImage(let message):
-      "Invalid Discord image upload: \(message)"
+    case .invalidFile(let message):
+      "Invalid Discord file upload: \(message)"
+    case .attachment(let message):
+      "Discord attachment operation failed: \(message)"
+    case .channel(let message):
+      "Discord channel operation failed: \(message)"
     case .invalidResponse:
       "Discord returned an invalid HTTP response."
     case .invalidURL:
